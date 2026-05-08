@@ -1,297 +1,309 @@
-#!/usr/bin/env python3
-# KEY GENERATOR SERVER - CUSTOM VALIDITY + KEY MANAGEMENT
-
-from flask import Flask, request, jsonify
-import requests
-import re
+from flask import Flask, request, redirect, render_template_string
 import random
 import string
 import json
 import os
-import time
-from urllib.parse import quote
 
 app = Flask(__name__)
+DB_FILE = "notes.json"
 
-# ======================= EZ4SHORT LOGIN =======================
-EZ4_USER = "Banna123"
-EZ4_PASS = "Jitendar"
-EZ4_SESSION = None
-EZ4_SESSION_TIME = 0
+# ======================= HTML TEMPLATE =======================
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>N0tes - Share Text</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #0a0a1a, #111133);
+            color: #fff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            width: 100%;
+            max-width: 800px;
+        }
+        .header h1 { font-size: 36px; color: #00ff9d; margin-bottom: 10px; }
+        .header p { color: #888; font-size: 14px; }
+        
+        .container {
+            background: #111133;
+            border-radius: 15px;
+            padding: 30px;
+            max-width: 800px;
+            width: 100%;
+            border: 1px solid #00ff9d33;
+            margin-bottom: 20px;
+        }
+        
+        textarea {
+            width: 100%;
+            height: 200px;
+            background: #0a0a1a;
+            border: 1px solid #00ff9d44;
+            border-radius: 10px;
+            color: #fff;
+            padding: 15px;
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+        }
+        textarea:focus { outline: none; border-color: #00ff9d; }
+        
+        .btn {
+            background: linear-gradient(135deg, #00ff9d, #00bfff);
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: 0.3s;
+        }
+        .btn:hover { transform: scale(1.05); }
+        
+        .result {
+            background: #000;
+            border: 2px dashed #00ff9d;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            word-break: break-all;
+            font-size: 18px;
+            color: #00ff9d;
+            display: {{ 'block' if show_result else 'none' }};
+        }
+        
+        .copy-btn {
+            background: #00ff9d22;
+            color: #00ff9d;
+            border: 1px solid #00ff9d44;
+            padding: 8px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 14px;
+            display: {{ 'inline-block' if show_result else 'none' }};
+        }
+        
+        .ad-banner {
+            background: #ffffff10;
+            border: 1px solid #ffffff22;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            color: #666;
+            margin: 15px 0;
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        .footer { color: #555; font-size: 12px; margin-top: 30px; text-align: center; }
+        .footer a { color: #00bfff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📝 N0tes</h1>
+        <p>Share text instantly. Free & Anonymous.</p>
+    </div>
+    
+    <!-- Ad Banner -->
+    <div class="ad-banner">
+        <script src="https://cdn.adpushup.com/ad.js"></script>
+    </div>
+    
+    <div class="container">
+        <h2 style="margin-bottom:15px;">✍️ Create New Note</h2>
+        <form method="POST" action="/">
+            <textarea name="text" placeholder="Type your text here...">{{ saved_text }}</textarea>
+            <button type="submit" class="btn">🚀 Create Note</button>
+        </form>
+        
+        {% if show_result %}
+        <div class="result" id="resultBox">
+            <strong>🔗 Share Link:</strong><br>
+            <span id="shareLink">{{ share_url }}</span>
+        </div>
+        <button class="copy-btn" onclick="copyLink('{{ share_url }}')">📋 Copy Link</button>
+        {% endif %}
+    </div>
+    
+    <!-- Ad Banner -->
+    <div class="ad-banner">
+        <script src="https://cdn.adpushup.com/ad.js"></script>
+    </div>
+    
+    <div class="footer">
+        Powered by <a href="https://t.me/eaglescrip">@eaglescrip</a>
+    </div>
+    
+    <script>
+        function copyLink(url) {
+            navigator.clipboard.writeText(url);
+            alert('✅ Link copied!');
+        }
+        
+        // Popup ad
+        setTimeout(function() {
+            window.open('https://google.com', '_blank', 'width=400,height=300');
+        }, 3000);
+    </script>
+</body>
+</html>
+"""
 
-# ======================= YOUR SHORTENER =======================
-YOUR_SHORTENER = "https://url-shortner-3jy6.onrender.com"
-
-# ======================= KEY DATABASE =======================
-KEYS_DB = {}  # {key: {"created": timestamp, "url": "...", "validity_hours": 6, "used_ips": []}}
+VIEW_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Note {{ code }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #0a0a1a, #111133);
+            color: #fff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: #111133;
+            border-radius: 15px;
+            padding: 30px;
+            max-width: 800px;
+            width: 100%;
+            border: 1px solid #00ff9d33;
+            margin-top: 50px;
+        }
+        .note-content {
+            background: #000;
+            border: 1px solid #00ff9d44;
+            border-radius: 10px;
+            padding: 20px;
+            font-size: 18px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #fff;
+            min-height: 150px;
+        }
+        .ad-banner {
+            background: #ffffff10;
+            border: 1px solid #ffffff22;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+            color: #666;
+            margin: 15px 0;
+            max-width: 800px;
+            width: 100%;
+        }
+        .footer { color: #555; font-size: 12px; margin-top: 30px; text-align: center; }
+        .footer a { color: #00bfff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="ad-banner">
+        <script src="https://cdn.adpushup.com/ad.js"></script>
+    </div>
+    
+    <div class="container">
+        <h2 style="color:#00ff9d;margin-bottom:15px;">📄 Note: {{ code }}</h2>
+        <div class="note-content">{{ text }}</div>
+    </div>
+    
+    <div class="ad-banner">
+        <script src="https://cdn.adpushup.com/ad.js"></script>
+    </div>
+    
+    <p><a href="/" style="color:#00bfff;">✍️ Create your own note</a></p>
+    
+    <div class="footer">
+        Powered by <a href="https://t.me/eaglescrip">@eaglescrip</a>
+    </div>
+    
+    <script>
+        setTimeout(function() {
+            window.open('https://google.com', '_blank', 'width=400,height=300');
+        }, 2000);
+    </script>
+</body>
+</html>
+"""
 
 # ======================= HELPERS =======================
-def random_key(length=8):
-    chars = string.ascii_lowercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, 'r') as f: return json.load(f)
+    return {}
 
-def clean_expired_keys():
-    """Remove expired keys"""
-    now = time.time()
-    expired = []
-    for k, v in KEYS_DB.items():
-        validity_sec = v.get("validity_hours", 6) * 3600
-        if now - v["created"] > validity_sec:
-            expired.append(k)
-    for k in expired:
-        del KEYS_DB[k]
+def save_db(db):
+    with open(DB_FILE, 'w') as f: json.dump(db, f)
 
-def create_notes_url(text):
-    """Create notes.io URL with FRESH session every time"""
-    session = requests.Session()
-    session.get("https://notes.io/", timeout=30)
-    
-    headers = {
-        "Host": "notes.io",
-        "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/146.0 Mobile Safari/537.36",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": "https://notes.io",
-        "Referer": "https://notes.io/",
-        "Accept": "*/*",
-    }
-    
-    resp = session.post(
-        "https://notes.io/short.php",
-        data=f"txt={quote(text)}",
-        headers=headers,
-        timeout=30
-    )
-    
-    if resp.status_code != 200:
-        return None
-    
-    match = re.search(r'href="(https://notes\.io/[^"]+)"', resp.text)
-    return match.group(1) if match else None
+def gen_code(length=6):
+    return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(length))
 
-def get_ez4_session():
-    """Get or refresh EZ4 session"""
-    global EZ4_SESSION, EZ4_SESSION_TIME
-    
-    if EZ4_SESSION and (time.time() - EZ4_SESSION_TIME) < 1800:
-        return EZ4_SESSION
-    
-    session = requests.Session()
-    headers = {
-        "Host": "ez4short.com",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml"
-    }
-    
-    resp = session.get("https://ez4short.com/auth/signin", headers=headers)
-    html = resp.text
-    
-    csrf = re.search(r'name="_csrfToken"[^>]*value="([^"]+)"', html)
-    tf = re.search(r'name="_Token\[fields\]"[^>]*value="([^"]+)"', html)
-    tu = re.search(r'name="_Token\[unlocked\]"[^>]*value="([^"]+)"', html)
-    
-    if not csrf or not tf or not tu:
-        return None
-    
-    login_data = (
-        f"_method=POST"
-        f"&_csrfToken={csrf.group(1)}"
-        f"&username={EZ4_USER}"
-        f"&password={EZ4_PASS}"
-        f"&remember_me=0"
-        f"&_Token%5Bfields%5D={quote(tf.group(1), safe='')}"
-        f"&_Token%5Bunlocked%5D={quote(tu.group(1), safe='')}"
-    )
-    
-    headers_post = {
-        "Host": "ez4short.com",
-        "Origin": "https://ez4short.com",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://ez4short.com/auth/signin"
-    }
-    
-    session.post("https://ez4short.com/auth/signin", data=login_data, headers=headers_post)
-    
-    EZ4_SESSION = session
-    EZ4_SESSION_TIME = time.time()
-    return session
-
-def shorten_ez4(long_url):
-    """Shorten using EZ4"""
-    session = get_ez4_session()
-    if not session:
-        return None
-    
-    headers = {
-        "Host": "ez4short.com",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36",
-        "Accept": "text/html"
-    }
-    resp = session.get("https://ez4short.com/member/dashboard", headers=headers)
-    html = resp.text
-    
-    csrf = re.search(r'name="_csrfToken"[^>]*value="([^"]+)"', html)
-    tf = re.search(r'name="_Token\[fields\]"[^>]*value="([^"]+)"', html)
-    tu = re.search(r'name="_Token\[unlocked\]"[^>]*value="([^"]+)"', html)
-    
-    if not csrf or not tf or not tu:
-        return None
-    
-    headers_post = {
-        "Host": "ez4short.com",
-        "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": "https://ez4short.com",
-        "Referer": "https://ez4short.com/member/dashboard"
-    }
-    
-    data = (
-        f"_method=POST"
-        f"&_csrfToken={csrf.group(1)}"
-        f"&url={quote(long_url)}"
-        f"&alias="
-        f"&ad_type=2"
-        f"&_Token%5Bfields%5D={quote(tf.group(1), safe='')}"
-        f"&_Token%5Bunlocked%5D={quote(tu.group(1), safe='')}"
-    )
-    
-    resp = session.post("https://ez4short.com/links/shorten", data=data, headers=headers_post)
-    
-    try:
-        result = resp.json()
-        if result.get("status") == "success":
-            return result.get("url")
-    except:
-        pass
-    
-    return None
-
-def final_shorten(long_url):
-    """Final shorten via your shortener"""
-    try:
-        resp = requests.post(
-            f"{YOUR_SHORTENER}/shorten",
-            json={"url": long_url},
-            timeout=30
-        )
-        data = resp.json()
-        return data.get("short_url")
-    except:
-        return None
-
-# ======================= API =======================
-@app.route('/get-key', methods=['GET'])
-def get_key():
-    """Generate key + return URL (CUSTOM VALIDITY)"""
-    try:
-        clean_expired_keys()
-        
-        # 🔥 User se validity lo (query param: ?hours=6)
-        validity_hours = request.args.get('hours', '6')
-        try:
-            validity_hours = float(validity_hours)
-            if validity_hours < 1:
-                validity_hours = 1
-            if validity_hours > 24:
-                validity_hours = 24
-        except:
-            validity_hours = 6
-        
-        user_ip = request.remote_addr
-        
-        # Check if same IP already has valid key
-        for k, v in KEYS_DB.items():
-            if user_ip in v.get("used_ips", []):
-                validity_sec = v.get("validity_hours", 6) * 3600
-                if time.time() - v["created"] < validity_sec:
-                    return jsonify({
-                        "status": "success",
-                        "key": k,
-                        "url": v["url"],
-                        "validity_hours": v.get("validity_hours", 6),
-                        "expires_in": round((validity_sec - (time.time() - v["created"])) / 3600, 1),
-                        "message": "Your existing key is still valid!"
-                    })
-        
-        # 1. Random key
-        key = random_key(8)
-        
-        # 2. Notes.io (fresh session)
-        notes_url = create_notes_url(key)
-        if not notes_url:
-            return jsonify({"error": "Notes.io failed"}), 500
-        
-        # 3. EZ4Short
-        ez4_url = shorten_ez4(notes_url)
-        if not ez4_url:
-            return jsonify({"error": "EZ4 failed"}), 500
-        
-        # 4. Your shortener
-        final_url = final_shorten(ez4_url)
-        if not final_url:
-            return jsonify({"error": "Final shorten failed"}), 500
-        
-        # Save to DB
-        KEYS_DB[key] = {
-            "created": time.time(),
-            "url": final_url,
-            "validity_hours": validity_hours,
-            "used_ips": [user_ip]
-        }
-        
-        return jsonify({
-            "status": "success",
-            "key": key,
-            "url": final_url,
-            "validity_hours": validity_hours,
-            "expires_in": validity_hours
-        })
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/verify-key', methods=['POST'])
-def verify_key():
-    """Verify if key is valid"""
-    clean_expired_keys()
-    
-    data = request.json
-    key = data.get('key', '')
-    
-    if key in KEYS_DB:
-        v = KEYS_DB[key]
-        validity_sec = v.get("validity_hours", 6) * 3600
-        
-        if time.time() - v["created"] < validity_sec:
-            return jsonify({
-                "status": "success",
-                "valid": True,
-                "expires_in": round((validity_sec - (time.time() - v["created"])) / 3600, 1)
-            })
-    
-    return jsonify({"status": "error", "valid": False, "message": "Key expired or invalid!"})
-
-@app.route('/keys', methods=['GET'])
-def list_keys():
-    """Show all active keys (admin)"""
-    clean_expired_keys()
-    active_keys = {}
-    for k, v in KEYS_DB.items():
-        validity_sec = v.get("validity_hours", 6) * 3600
-        active_keys[k] = {
-            "url": v["url"],
-            "created": v["created"],
-            "validity_hours": v.get("validity_hours", 6),
-            "expires_in": round((validity_sec - (time.time() - v["created"])) / 3600, 1)
-        }
-    return jsonify({"total": len(active_keys), "keys": active_keys})
-
-@app.route('/')
+# ======================= ROUTES =======================
+@app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Key Generator Server Running!"
+    share_url = ""
+    show_result = False
+    saved_text = ""
+    
+    if request.method == 'POST':
+        text = request.form.get('text', '')
+        if text:
+            db = load_db()
+            code = gen_code()
+            db[code] = text
+            save_db(db)
+            base = request.host_url.rstrip('/')
+            share_url = f"{base}/{code}"
+            show_result = True
+            saved_text = text
+    
+    return render_template_string(HTML_TEMPLATE, 
+                                   share_url=share_url, 
+                                   show_result=show_result,
+                                   saved_text=saved_text)
+
+@app.route('/<code>')
+def view(code):
+    db = load_db()
+    text = db.get(code, "Note not found!")
+    return render_template_string(VIEW_TEMPLATE, code=code, text=text)
+
+@app.route('/api/create', methods=['POST'])
+def api_create():
+    """API endpoint for scripts"""
+    text = request.json.get('text', '')
+    if not text:
+        return {"error": "Text required"}, 400
+    
+    db = load_db()
+    code = gen_code()
+    db[code] = text
+    save_db(db)
+    
+    base = request.host_url.rstrip('/')
+    return {"url": f"{base}/{code}", "code": code}
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
